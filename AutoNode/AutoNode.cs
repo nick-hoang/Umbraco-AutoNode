@@ -2,12 +2,14 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Xml;
-using umbraco;
+using Umbraco;
 using Umbraco.Core;
 using Umbraco.Core.Models;
 using Umbraco.Core.Services;
 using System.Web.Hosting;
 using System.IO;
+using Umbraco.Core.Persistence;
+using Umbraco.Core.Configuration;
 
 namespace DotSee
 {
@@ -67,10 +69,10 @@ namespace DotSee
         /// </summary>
         /// <param name="node">The newly created node we need to apply rules for</param>
         public void Run(IContent node)
-        {
+        {            
             string createdDocTypeAlias = node.ContentType.Alias;
 
-            bool hasChildren = node.Children().Any();
+            bool hasChildren = node.HasChildren();
             
             foreach (AutoNodeRule rule in _rules)
             {
@@ -86,7 +88,7 @@ namespace DotSee
         {
             string createdDocTypeAlias = node.ContentType.Alias;
 
-            bool hasChildren = node.Children().Any();
+            bool hasChildren = node.HasChildren();
 
             foreach (AutoNodeRule rule in _rules)
             {
@@ -111,18 +113,18 @@ namespace DotSee
 
             try
             {
-                xmlConfig.Load(HostingEnvironment.MapPath(GlobalSettings.Path + "/../config/autoNode.config"));
+                xmlConfig.Load(HostingEnvironment.MapPath(new GlobalSettings().Path + "/../config/autoNode.config"));
             }
             catch (FileNotFoundException ex) {
-                Umbraco.Core.Logging.LogHelper.Error(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Configuration file was not found.", ex);
+                Umbraco.Core.Composing.Current.Logger.Error(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Configuration file was not found.", ex);
                 return;
             }
             catch (Exception ex)
             {
-                Umbraco.Core.Logging.LogHelper.Error(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: There was a problem loading AutoNode configuration from the config file", ex);
+                Umbraco.Core.Composing.Current.Logger.Error(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: There was a problem loading AutoNode configuration from the config file", ex);
                 return;
             }
-            Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Loading configuration...");
+            Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Loading configuration...");
             
             foreach (XmlNode xmlConfigEntry in xmlConfig.SelectNodes("/autoNode/rule"))
             {
@@ -139,7 +141,7 @@ namespace DotSee
 
                 }
             }
-            Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Loading configuration complete");
+            Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Loading configuration complete");
         }
 
 
@@ -151,22 +153,21 @@ namespace DotSee
         /// <param name="hasChildren">Indicates if the node has children</param>
         private void CreateNewNode(IContent node, AutoNodeRule rule, bool hasChildren)
         {
-            //Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, string.Format("AutoNode: Trying to automatically create node of type {2} for node {0} of type {1}...", node.Id.ToString(), node.ContentType.Alias.ToString(), rule.DocTypeAliasToCreate));
+            //Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, string.Format("AutoNode: Trying to automatically create node of type {2} for node {0} of type {1}...", node.Id.ToString(), node.ContentType.Alias.ToString(), rule.DocTypeAliasToCreate));
 
             //If rule says only if no children and there are children, abort process
             if (rule.OnlyCreateIfNoChildren && hasChildren)
             {
-                //Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Aborting node creation due to rule restrictions. Parent node already has children, rule indicates that parent node should not have children");
+                //Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Aborting node creation due to rule restrictions. Parent node already has children, rule indicates that parent node should not have children");
                 return;
             }
 
-            var existingNode = node.Children()
-            .Where(x =>
-                x.ContentType.Alias.ToLower().Equals(rule.DocTypeAliasToCreate.ToLower()) &&
-                x.Name.ToLower().Equals(rule.NodeName.ToLower())).FirstOrDefault();
+            var existingNode = node.IsExistChildren(x =>
+                x.ContentType.Alias == rule.DocTypeAliasToCreate &&
+                x.Name.ToLower() == rule.NodeName.ToLower());            
 
             ///Get a content service reference
-            IContentService cs = ApplicationContext.Current.Services.ContentService;
+            IContentService cs = Umbraco.Core.Composing.Current.Services.ContentService;
 
             //If it exists already
             if (existingNode != null)
@@ -174,17 +175,17 @@ namespace DotSee
                 //If it is already published or if the parent is NOT published, abort process.
                 if (existingNode.Published || !node.Published)
                 {
-                    //Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Aborting node creation since node already exists");
+                    //Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Aborting node creation since node already exists");
                     return;
                 }
 
                 //If it exists already but is not published and parent is published, republish
                 if (!existingNode.Published && node.Published)
                 {
-                    Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Republishing already existing child node...");
+                    Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Republishing already existing child node...");
 
                     //Republish the node
-                    cs.SaveAndPublishWithStatus(existingNode, raiseEvents: true);
+                    cs.SaveAndPublish(existingNode, raiseEvents: true);
                     return;
                 }
             }
@@ -193,23 +194,23 @@ namespace DotSee
             try
             {
                 ///Create and publish the new node
-                IContent content = cs.CreateContent(rule.NodeName, node.Id, rule.DocTypeAliasToCreate);
+                IContent content = cs.CreateContent(rule.NodeName, node.GetUdi(), rule.DocTypeAliasToCreate);
 
                 //Publish the new node
-                cs.SaveAndPublishWithStatus(content, raiseEvents: false);                   
+                cs.SaveAndPublish(content, raiseEvents: false);                   
                 
                 ///Bring the new node first if rule dictates so
                 if (rule.BringNewNodeFirst)
                 {
-                    //Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Bringing newly created node first...");
+                    //Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Bringing newly created node first...");
                     cs.Sort(BringLastNodeFirst(node));
                 }
 
-                //Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Node created succesfully.");
+                //Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Node created succesfully.");
             }
             catch (Exception ex)
             {
-                Umbraco.Core.Logging.LogHelper.Error(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: There was a problem with new node creation. Please check that the doctype alias you have defined in rules actually exists", ex);
+                Umbraco.Core.Composing.Current.Logger.Error(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: There was a problem with new node creation. Please check that the doctype alias you have defined in rules actually exists", ex);
             }
            
         }
@@ -219,22 +220,21 @@ namespace DotSee
             //If rule says only if no children and there are children, abort process
             if (rule.OnlyCreateIfNoChildren && hasChildren)
             {
-                //Umbraco.Core.Logging.LogHelper.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Aborting node creation due to rule restrictions. Parent node already has children, rule indicates that parent node should not have children");
+                //Umbraco.Core.Composing.Current.Logger.Info(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType, "AutoNode: Aborting node creation due to rule restrictions. Parent node already has children, rule indicates that parent node should not have children");
                 return;
-            }
+            }            
 
-            var existingNode = node.Children()
-            .Where(x =>
+            var existingNode = node.IsExistChildren(x =>
                 x.ContentType.Alias.ToLower().Equals(rule.DocTypeAliasToCreate.ToLower()) &&
-                x.Name.ToLower().Equals(rule.NodeName.ToLower())).FirstOrDefault();
+                x.Name.ToLower().Equals(rule.NodeName.ToLower()));
 
             ///Get a content service reference
-            IContentService cs = ApplicationContext.Current.Services.ContentService;
+            IContentService cs = Umbraco.Core.Composing.Current.Services.ContentService;
             //If it exists already
             if (existingNode != null)
             {
                 //Publish the new node
-                cs.SaveAndPublishWithStatus(existingNode, raiseEvents: false);
+                cs.SaveAndPublish(existingNode, raiseEvents: false);
             }
         }
 
@@ -245,14 +245,13 @@ namespace DotSee
         /// <returns></returns>
         private IEnumerable<IContent> BringLastNodeFirst(IContent node)
         {
-            int cnt = node.Children().Count();
+            int cnt = node.CountChildren();
             if (cnt == 0) { yield break; }
 
-            yield return node.Children().Last();
+            yield return node.LastChildren();
 
-            foreach (IContent child in node.Children().Take(cnt - 1))
+            foreach (IContent child in node.Children(cnt - 1))
             {
-
                 yield return child;
             }
         }
